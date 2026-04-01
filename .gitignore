@@ -1,0 +1,44 @@
+# Go
+backend/bin/
+backend/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+backend/aura-backend
+backend/docs/swagger.json
+backend/docs/swagger.yaml
+
+# Node.js / Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env*.local
+
+# Environment files
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Docker
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MinIO data (local dev)
+minio_data/
+
+# Uploads (local dev)
+uploads/
