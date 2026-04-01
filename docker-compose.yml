@@ -1,0 +1,139 @@
+# =============================================================================
+# Aura – Single-Click Docker Compose
+# Usage: docker compose up -d
+# =============================================================================
+
+name: aura
+
+services:
+
+  # ── PostgreSQL + pgvector ───────────────────────────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: aura-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aura}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aura_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-aura}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/000001_init_schema.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aura}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: aura-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO (S3-compatible object storage) ────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: aura-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # MinIO Console
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MinIO bucket initialisation ─────────────────────────────────────────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: aura-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin};
+        mc mb --ignore-existing local/${S3_BUCKET:-aura-media};
+        mc anonymous set none local/${S3_BUCKET:-aura-media};
+        echo 'MinIO bucket ready.';
+      "
+
+  # ── Go Backend ──────────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: aura-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: production
+      HOST: 0.0.0.0
+      PORT: 8080
+      DATABASE_URL: postgres://${POSTGRES_USER:-aura}:${POSTGRES_PASSWORD:-aura_secret}@postgres:5432/${POSTGRES_DB:-aura}?sslmode=disable
+      REDIS_ADDR: redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET:-aura-media}
+      S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_USE_PATH_STYLE: "true"
+      S3_REGION: us-east-1
+      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ── Next.js Frontend ────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: aura-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080/api/v1}
+    ports:
+      - "3000:3000"
+
+# =============================================================================
+# Named volumes (data persists across container restarts)
+# =============================================================================
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
